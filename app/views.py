@@ -14,6 +14,57 @@ from googleplaces import GooglePlaces, types
 from .serializers import *
 # Replace 'Your_API_Key' with your actual Google Places API key
 
+from django.shortcuts import render
+from django.http import JsonResponse
+from rest_framework.decorators import api_view
+import random
+from django.template.loader import get_template
+from pathlib import Path
+from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
+import pdfkit
+from .models import *
+import requests
+from rest_framework import status
+from twilio.rest import Client
+import random
+import string
+# Create your views here.
+
+
+@api_view(['GET'])
+def hello_world(request):
+    return JsonResponse({"message": "Hello World!"})
+
+
+def render_to_pdf(template_src, context, file_name="invoice"):
+    Path("static/prescription/").mkdir(parents=True, exist_ok=True)
+    file_path = f'prescription/{file_name}_{str(random.randint(100000, 9999999))}.pdf'
+    print("file_path::",file_path)
+    template = get_template(template_src)
+    print("template::",template)
+    html = template.render(context)
+    options = {
+        'page-height': '270mm',
+        'page-width': '185mm',
+    }
+
+    pdf = pdfkit.from_string(html, r'static/' + file_path, options=options)
+    return pdf,file_path
+
+# @csrf_exempt
+@api_view(['POST'])
+def generate_prescription(request):
+    template_src = 'prescription.html'
+    data = request.POST   
+    
+    random_integer = random.randint(1, 100)
+    temp, file_path = render_to_pdf(template_src, data, f'prescription_{random_integer}')
+    user = BaseUser.objects.filter(mobile_no=data.get('mobile_no')).last()
+    image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
+    
+    return JsonResponse({"msg":"Done","file_path":image_url})
+
 @api_view(['POST'])
 def generate_otp(request):
     mobile_no = request.data.get('mobile_no')
@@ -104,3 +155,484 @@ def verify_otp(request):
     else:
         return JsonResponse({"success": False, "message": "No OTP found"}, status=status.HTTP_404_NOT_FOUND)
     
+
+
+@csrf_exempt
+def find_nearby_hospitals(request):
+    if request.method == 'GET':
+        
+        latitude = request.GET.get('latitude','19.3826')
+        longitude = request.GET.get('longitude','72.8320')
+
+        # Initialize the GooglePlaces constructor
+        google_places = GooglePlaces(settings.GMAP_API_KEY)
+
+        # Perform a nearby search for hospitals
+        query_result = google_places.nearby_search(
+            lat_lng={'lat': float(latitude), 'lng': float(longitude)},
+            radius=5000,
+            types=[types.TYPE_HOSPITAL]
+        )
+
+        # Check if any hospitals were found
+        if query_result.places:
+            hospitals = []
+            for place in query_result.places:
+                hospital_info = {
+                    "name": place.name,
+                    "latitude": place.geo_location['lat'],
+                    "longitude": place.geo_location['lng'],
+                    "map_link": f"https://www.google.com/maps?q={place.geo_location['lat']},{place.geo_location['lng']}"
+                }
+                hospitals.append(hospital_info)
+
+            return JsonResponse({"hospitals": hospitals})
+        else:
+            return JsonResponse({"message": "No hospital found in the area."})
+
+    else:
+        return JsonResponse({"error": "Invalid request method. Use GET."})
+
+@api_view(['POST'])
+def upload_doc(request):
+    user_id = request.query_params.get('id')
+    user = BaseUser.objects.filter(id=user_id).last()
+    Document.objects.create(user=user,file_name=request.data.get('file_name'),hash_value=request.data.get('hash_value'))
+    return JsonResponse({"status":"success","message":"Document uploaded successfully"})
+
+@api_view(['GET'])
+def get_doc(request):
+    user_id = request.query_params.get('id')
+    user = BaseUser.objects.filter(id=user_id).last()
+    doc = Document.objects.filter(user=user)
+    data = DocumentSerializer(doc,many=True).data
+    return JsonResponse({"status":"success","data":data})
+
+
+@api_view(['POST'])
+def user_registration(request):
+    mobile_no = request.data.get('mobile_no')
+    user_type = request.data.get('user_type')
+    first_name = request.data.get('first_name', None)
+    last_name = request.data.get('last_name', None)
+    email = request.data.get('email', None)
+    base_user_queryset = BaseUser.objects.filter(mobile_no=mobile_no)
+    print(request.data)
+    if base_user_queryset.exists():
+        base_user = base_user_queryset.last()
+        base_user.first_name = first_name
+        base_user.last_name = last_name
+        base_user.email = email
+        base_user.user_type = user_type
+        profile_picture = request.FILES.get('profile_pic')
+        print("profile_picture::",profile_picture)
+        if profile_picture:
+            print(profile_picture)
+            base_user.profile_picture = profile_picture
+            base_user.save()
+            print("base_user::",base_user.profile_picture)
+            # Use the .url property to get the image URL
+            base_user.profile_picture_url = base_user.profile_picture.url
+        base_user.save()
+                
+        
+        if base_user.user_type == 'doctor':
+            # try:
+                print("on 304")
+                template_src = 'letter_head.html'
+                data = request.data
+                print(request.FILES)
+                
+                random_integer = random.randint(1, 100)
+                temp, file_path = render_to_pdf(template_src, data, f'letter_head_{random_integer}')
+                user = BaseUser.objects.filter(mobile_no=mobile_no).last()
+                print('user::',user)
+                image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
+                print("mobile_no::",mobile_no)
+                doctor, created = Doctor.objects.get_or_create(user=user)
+                print("doctor::",doctor)
+                doctor.hospital_affiliation = request.data.get('hospital_affiliation', None)
+                doctor.license_number = request.data.get('license_number', None)
+                doctor.years_of_experience = request.data.get('years_of_experience', None)
+                doctor.letter_head_url = image_url
+                doctor.save()
+                user_details = {
+                    'id': doctor.user.id,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'email': user.email,
+                    # 'profile_url': settings.CURRENT_HOST + "" + doctor.user.profile_picture_url,
+                    'hospital_affiliation': doctor.hospital_affiliation,
+                    'license_number': doctor.license_number,
+                    'years_of_experience': doctor.years_of_experience,
+                    'letter_head_url': doctor.letter_head_url,
+                }
+
+                return JsonResponse(user_details)
+
+            # except Exception as e:
+            #     return JsonResponse({"error": str(e)})
+        elif base_user.user_type == 'patient':
+            # try:
+                data = request.data
+                template_src = 'prescription.html'
+                patient, created = Patient.objects.get_or_create(user=base_user)
+                patient.allergies = request.data.get('allergies', None)
+                patient.current_medications = request.data.get('current_medications', None)
+                patient.medical_conditions = request.data.get('medical_conditions', None)
+                random_integer = random.randint(1, 100)
+                file_name = f'prescription_{random_integer}'
+                temp, file_path = render_to_pdf(template_src, data, file_name)
+                user = BaseUser.objects.filter(mobile_no=mobile_no).last()
+                print('user::',user)
+                image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
+
+                doc = Document.objects.create(user=user,download_image_url=image_url,file_name=file_name)
+                patient.save()
+                user_details = {
+                    'id': patient.user.id,
+                    'first_name': patient.user.first_name,
+                    'last_name': patient.user.last_name,
+                    'email': patient.user.email,
+                    'allergies': patient.allergies,
+                    # 'profile_url': settings.CURRENT_HOST + "" + patient.user.profile_picture_url,
+                    'current_medications': patient.current_medications,
+                    'medical_conditions': patient.medical_conditions,
+                    'prescription_url':doc.download_image_url,
+                }
+
+                if created:
+                    return JsonResponse({'message': 'Patient registered successfully', 'user': user_details, "status": "success"},
+                                        status=status.HTTP_201_CREATED)
+                else:
+                    return JsonResponse({'message': 'Patient already exists', 'user': user_details, "status": "success"},
+                                        status=status.HTTP_409_CONFLICT)
+
+                # except Exception as e:
+                #     return JsonResponse({"error": str(e)})
+
+
+    else:
+        return JsonResponse({'message': 'User Not Found'}, status=status.HTTP_404_NOT_FOUND)        
+
+
+
+
+@api_view(['POST'])
+def generate_card(request):
+    template_src = 'card.html'
+    data = {}
+    random_integer = random.randint(1, 100)
+    temp, file_path = render_to_pdf(template_src, data, f'letter_head_{random_integer}')
+    # user = BaseUser.objects.filter(mobile_no=mobile_no).last()
+    # print('user::',user)
+    image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
+
+    return JsonResponse({"msg":"Done","file_path":image_url})
+
+@api_view(['POST'])
+def upload_prescription(request):
+    data = request.data
+    template_src = 'prescription.html'
+    random_integer = random.randint(1, 100)
+    temp, file_path = render_to_pdf(template_src, data, f'letter_head_{random_integer}')
+    # user = BaseUser.objects.filter(mobile_no=mobile_no).last()
+    # print('user::',user)
+    image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
+
+    return JsonResponse({"msg":"Done","file_path":image_url})
+
+
+
+##OCR
+
+# yourappname/views.py
+import os
+import json
+import cv2
+import layoutparser as lp
+from paddleocr import PaddleOCR
+import pandas as pd
+from django.http import JsonResponse
+from rest_framework.decorators import api_view, parser_classes
+from rest_framework.parsers import MultiPartParser, FormParser
+# from .models import ProcessedImage
+
+@api_view(['POST'])
+@parser_classes((MultiPartParser, FormParser,))
+def table_ocr(request):
+    try:
+        image_file = request.FILES.get('image')
+        if not image_file:
+            return JsonResponse({"error": "No image file provided"}, status=400)
+
+        # Define the path to save the uploaded image
+        image_path = os.path.join('media', 'images', image_file.name)
+
+        # Save the uploaded image
+        with open(image_path, 'wb') as f:
+            for chunk in image_file.chunks():
+                f.write(chunk)
+
+        # Load the layout detection model
+        model = lp.PaddleDetectionLayoutModel(
+            config_path="lp://PubLayNet/ppyolov2_r50vd_dcn_365e_publaynet/config",
+            threshold=0.5,
+            label_map={0: "Text", 1: "Title", 2: "List", 3: "Table", 4: "Figure"},
+            enforce_cpu=False,
+            enable_mkldnn=True
+        )
+
+        # Perform layout detection
+        image = cv2.imread(image_path)
+        image = image[..., ::-1]
+        layout = model.detect(image)
+
+        y_1 = None  # Initialize y_1 and y_2
+        y_2 = None
+        for l in layout._blocks:
+            if l.type == 'Table':
+                x_1 = int(l.block.x_1)
+                y_1 = int(l.block.y_1)
+                x_2 = int(l.block.x_2)
+                y_2 = int(l.block.y_2)
+                break
+
+        if y_1 is None or y_2 is None:
+            return JsonResponse({"error": "Table coordinates not found"})
+
+        total_area = image[y_1:y_2, x_1:x_2]
+
+        ocr = PaddleOCR(lang='en')
+        output = ocr.ocr(total_area)
+
+        data = []
+
+        # Iterate over each OCR result
+        for out in output[0]:
+            # Extract relevant information
+            text = out[1][0]
+            confidence = out[1][1]
+            bbox = out[0]
+            x_min, y_min, x_max, y_max = bbox
+
+            # Compute the row-wise sum of bbox coordinates
+            bbox_sum = sum(x_min) + sum(y_min) + sum(x_max) + sum(y_max)
+
+            # Append the information to the data list
+            data.append([text, bbox_sum])
+
+        # Create a pandas DataFrame from the data list
+        df = pd.DataFrame(data, columns=['Text', 'BboxSum'])
+
+        new_rows = []
+
+        for index, row in df.iterrows():
+            if ':' in row['Text']:
+                text_parts = row['Text'].split(':', 1)
+                text1 = text_parts[0].strip()
+                text2 = text_parts[1].strip()
+                new_rows.append([text1, row['BboxSum']])
+                new_rows.append([text2, row['BboxSum']])
+            elif row['Text'].strip() != '':
+                new_rows.append([row['Text'], row['BboxSum']])
+
+        new_df = pd.DataFrame(new_rows, columns=['Text', 'BboxSum'])
+
+        # Remove rows with only BboxSum and no text
+        new_df = new_df[new_df['Text'] != '']
+
+        # Select only the desired columns
+        new_df = new_df[['Text', 'BboxSum']]
+
+        # Define the list of keys to search for
+        keys_to_find = [
+            'Patient Name',
+            'Result',
+            'Normal Range',
+            'Units'
+        ]
+
+        result = {}
+        key_flag = False
+        previous_key = ''
+
+        # Iterate over each row in the DataFrame
+        for index, row in new_df.iterrows():
+            # Convert the text to lowercase for case-insensitive comparison
+            text = row['Text'].lower()
+
+            # Check if the text matches any of the keys
+            if text in [key.lower() for key in keys_to_find]:
+                # Set the flag to indicate a key has been found
+                key_flag = True
+
+                # Set the current text as the previous key
+                previous_key = row['Text']
+            elif key_flag:
+                # If the flag is True, set the previous key as a key in the result dictionary
+                # and the current text as its value
+                if previous_key not in result:
+                    result[previous_key] = [row['Text']]
+                else:
+                    result[previous_key].append(row['Text'])
+
+                # Reset the flag and previous key
+                key_flag = False
+                previous_key = ''
+
+        # Convert the result dictionary to JSON
+        result_json = json.dumps(result)
+
+        # Delete records used as keys or values
+        keys_to_delete = list(result.keys()) + sum(result.values(), [])
+        new_df = new_df[~new_df['Text'].isin(keys_to_delete)]
+
+        # Initialize the dictionary
+        key_value_pairs = {}
+
+        # Set the initial key and previous_bbox_sum
+        key = new_df['Text'].iloc[0]
+        previous_bbox_sum = new_df['BboxSum'].iloc[0]
+
+        # Iterate over the 'BboxSum' column
+        for bbox_sum in new_df['BboxSum']:
+            # Compare the current bbox_sum with the previous one
+            if bbox_sum > previous_bbox_sum:
+                # Get the corresponding text value
+                text = new_df.loc[new_df['BboxSum'] == bbox_sum, 'Text'].values[0]
+                # Exclude the duplicate values
+                if text != key:
+                    # Append the value to the existing key
+                    if key in key_value_pairs:
+                        key_value_pairs[key].append(text)
+                    else:
+                        # Check if the key is in the exclusion list
+                        if key not in keys_to_find:
+                            key_value_pairs[key] = [text]
+            else:
+                # Create a new key
+                key = new_df.loc[new_df['BboxSum'] == bbox_sum, 'Text'].values[0]
+                # Initialize the value as a list with the current text
+                # Check if the key is in the exclusion list
+                if key not in keys_to_find:
+                    key_value_pairs[key] = [key]
+
+            # Update the previous_bbox_sum
+            previous_bbox_sum = bbox_sum
+
+        # Convert the key-value pairs to JSON
+        key_value_json = json.dumps(key_value_pairs)
+
+        # Merge the two JSON objects into one
+        merged_json = {**json.loads(result_json), **json.loads(key_value_json)}
+
+        # Save the processed data and image to the database
+       
+        # processed_image = ProcessedImage(image=image_file, processed_data=merged_json)
+        # processed_image.save()
+
+        # Remove the uploaded image
+        os.remove(image_path)
+
+        return JsonResponse(merged_json)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@api_view(['POST'])
+def qr_code(request):
+    patient_uid = request.data.get('patient_uid')
+    doctor_uid = request.data.get('doctor_uid')
+    doctor_uid = BaseUser.objects.get(uuid=patient_uid)
+    doctor_base_user = BaseUser.objects.get(uuid=doctor_uid)
+    patient_base_user = get_object_or_404(BaseUser, uuid=patient_uid)
+    doctor_base_user = get_object_or_404(BaseUser, uuid=doctor_uid)
+
+    documents = Document.objects.filter(user=patient_base_user)
+
+    # Creating PatientRecordToDoctor with multiple documents
+    patient_record_to_doctor = PatientRecordToDoctor.objects.create(
+        doctor=Doctor.objects.get(user=doctor_base_user),
+        patient=Patient.objects.get(user=patient_base_user),
+    )
+
+    # Adding the retrieved documents to the many-to-many relationship
+    patient_record_to_doctor.record.set(documents)
+
+
+    DoctorTracktoPatient.objects.create(patient=Patient.objects.get(user=patient_base_user,
+                                        doctor=Doctor.objects.get(user=doctor_base_user)))
+    return JsonResponse({"success": True,"msg":"Successfully done"}, status=200)
+
+from django.shortcuts import get_object_or_404
+
+@api_view(['POST'])
+def qr_code(request):
+    patient_uid = request.data.get('patient_uid')
+    doctor_uid = request.data.get('doctor_uid')
+
+    patient_base_user = get_object_or_404(BaseUser, uuid=patient_uid)
+    doctor_base_user = get_object_or_404(BaseUser, uuid=doctor_uid)
+
+    documents = Document.objects.filter(user=patient_base_user)
+
+    # Creating PatientRecordToDoctor with multiple documents
+    if not (PatientRecordToDoctor.objects.filter( doctor=Doctor.objects.get(user=doctor_base_user),
+        patient=Patient.objects.get(user=patient_base_user))).exists():
+        patient_record_to_doctor = PatientRecordToDoctor.objects.create(
+            doctor=Doctor.objects.get(user=doctor_base_user),
+            patient=Patient.objects.get(user=patient_base_user),
+        )
+        
+        patient_record_to_doctor.record.set(documents)
+
+        if not (DoctorTracktoPatient.objects.filter(patient=patient_record_to_doctor.patient,
+                                            doctor=patient_record_to_doctor.doctor)).exists():
+            DoctorTracktoPatient.objects.create(patient=patient_record_to_doctor.patient,
+                                                doctor=patient_record_to_doctor.doctor)
+        
+            return JsonResponse({"success": True, "msg": "Successfully done"}, status=200)
+        return JsonResponse({"success": True, "msg": "Successfully"})
+    else:
+        return JsonResponse({"msg":"Record Already Exists"})
+
+
+#Show Patient All the data to whom the data is accessible
+@api_view(['GET'])
+def show_data_to_patient(request):
+    uuid = request.data.get('uuid')
+    base = BaseUser.objects.get(uuid=uuid)
+    print(base)
+    patient = Patient.objects.get(user=base)
+    queryset = DoctorTracktoPatient.objects.filter(patient=patient).values('doctor__user__uuid','patient__id')
+    # print(doctor_serializer)
+    return JsonResponse({"data":list(queryset)})
+
+
+@api_view(['GET'])
+def show_data_to_doctor(request):
+    uuid = request.data.get('uuid')
+    user = BaseUser.objects.get(uuid=uuid)
+    print(user)
+    doctor = Doctor.objects.filter(user=user).last()
+    print(doctor)
+
+    data = PatientRecordToDoctor.objects.filter(doctor__user=user).values('record__hash_value')
+
+    # patient = PatientRecordToDoctorSerializer(data,many=True).data
+    return JsonResponse({"data":list(data)})
+
+
+@api_view(['POST'])
+def remove_access(request):
+    patient_uid = request.data.get('patient_uid')
+    doctor_uid = request.data.get('doctor_uid')
+    patient_base_user = BaseUser.objects.get(uuid=patient_uid)
+    doctor_base_user = BaseUser.objects.get(uuid=doctor_uid)
+    doctor = Doctor.objects.get(user=doctor_base_user)
+    patient = Patient.objects.get(user=patient_base_user)
+    
+    DoctorTracktoPatient.objects.filter(patient=patient,doctor=doctor).delete()
+    PatientRecordToDoctor.objects.filter(patient=patient,doctor=doctor).delete()
+    return JsonResponse({"msg":"Record deleted successfully!"})

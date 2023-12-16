@@ -1,6 +1,5 @@
 from django.db import models
-
-# Create your models here.
+import uuid
 
 class BaseUser(models.Model):
     USER_TYPES = (
@@ -8,7 +7,6 @@ class BaseUser(models.Model):
         ('doctor', 'Doctor'),
       
     )
-   
     mobile_no = models.CharField(max_length=12,unique=True)
     user_type = models.CharField(max_length=15, choices=USER_TYPES)
     first_name = models.CharField(max_length=30,null=True, blank=True)
@@ -16,6 +14,16 @@ class BaseUser(models.Model):
     email = models.CharField(max_length=30,null=True, blank=True)
     profile_picture = models.ImageField(upload_to='uploads/',null=True, blank=True)
     profile_picture_url = models.CharField(max_length=300,null=True, blank=True)
+    uuid = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+
+
+    def generate_unique_uuid(self):
+        return uuid.uuid4()
+
+    def save(self, *args, **kwargs):
+            if not self.uuid:
+                self.uuid = self.generate_unique_uuid()
+            super().save(*args, **kwargs)
 class Doctor(models.Model):
     user = models.OneToOneField(BaseUser, on_delete=models.CASCADE)
     hospital_affiliation = models.CharField(max_length=100,null=True, blank=True)
@@ -28,9 +36,20 @@ class Patient(models.Model):
     allergies = models.TextField(null=True, blank=True)
     current_medications = models.TextField(null=True, blank=True)
     medical_conditions = models.TextField(null=True, blank=True)
-    prescription_url = models.CharField(max_length=400,null=True, blank=True)   
+    prescription_url = models.CharField(max_length=400,null=True, blank=True)       
+    
+class Document(models.Model):
+    
+    user = models.ForeignKey(BaseUser, on_delete=models.CASCADE,null=True, blank=True)
+    file_name = models.CharField(max_length=100,null=True, blank=True)
+    hash_value = models.CharField(max_length=300,null=True, blank=True)
+    download_image = models.ImageField(upload_to='uploads/',null=True, blank=True)
+    download_image_url = models.CharField(max_length=300,null=True, blank=True)
 
+    created_at = models.DateTimeField(auto_now_add=True,)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    
 class OTP(models.Model):
    
     user = models.ForeignKey(BaseUser, on_delete=models.CASCADE,null=True,blank=True)
@@ -39,3 +58,16 @@ class OTP(models.Model):
     is_used = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+
+class PatientRecordToDoctor(models.Model):
+    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE,null=True, blank=True)
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE,null=True, blank=True)
+    record = models.ManyToManyField(Document)
+
+
+class DoctorTracktoPatient(models.Model):
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE,null=True, blank=True)
+    doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE,null=True, blank=True)
+
