@@ -636,3 +636,21 @@ def remove_access(request):
     DoctorTracktoPatient.objects.filter(patient=patient,doctor=doctor).delete()
     PatientRecordToDoctor.objects.filter(patient=patient,doctor=doctor).delete()
     return JsonResponse({"msg":"Record deleted successfully!"})
+
+
+# Triggering the blockchain method 
+from thirdweb import ThirdwebSDK
+from thirdweb.types import SDKOptions
+@api_view(['POST'])
+def trigger_smartcontract(request):
+    abi = [{"inputs":[{"internalType":"uint256","name":"_gasCostCoverage","type":"uint256"}],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"patient","type":"address"},{"indexed":False,"internalType":"uint256","name":"dataCount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DataSale","type":"event"},{"inputs":[],"name":"dataThreshold","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"gasCostCoverage","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"patients","outputs":[{"internalType":"uint256","name":"dataCount","type":"uint256"},{"internalType":"string","name":"disorderName","type":"string"},{"internalType":"enum HealthDataMarketplace.DisorderType","name":"disorderType","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"_dataCount","type":"uint256"},{"internalType":"string","name":"_disorderName","type":"string"},{"internalType":"enum HealthDataMarketplace.DisorderType","name":"_disorderType","type":"uint8"}],"name":"submitData","outputs":[],"stateMutability":"nonpayable","type":"function"}]
+    contract_address = "0xC52FAD3A24b85aABBa08fE6335925847DCEa4B86"
+    sdk = ThirdwebSDK("goerli", options=SDKOptions(secret_key="0x2a19c7f0bC798b1A085238fdbC307ebE5b03A46C"))
+    contract = sdk.get_contract(contract_address, abi=abi)
+    _dataCount = 1
+    _disorderName = "Cancer"  #
+    _disorderType = "Critical"
+    data = contract.call("submitData", _dataCount, _disorderName, _disorderType)
+    print(data)
+    return JsonResponse({"msg":"Stored to blockchain"})
+    
