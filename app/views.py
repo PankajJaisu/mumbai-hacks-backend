@@ -1,19 +1,15 @@
-from django.shortcuts import render
-from .models import Doctor
-from rest_framework.decorators import api_view
-
-# Create your views here.
-
-    
-import googlemaps
-
-import json
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from googleplaces import GooglePlaces, types
+from django.shortcuts import get_object_or_404
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.decorators import api_view, parser_classes
+import pandas as pd
+from paddleocr import PaddleOCR
+import layoutparser as lp
+import cv2
+import os
 from .serializers import *
-# Replace 'Your_API_Key' with your actual Google Places API key
-
+from googleplaces import GooglePlaces, types
+import json
+import googlemaps
 from django.shortcuts import render
 from django.http import JsonResponse
 from rest_framework.decorators import api_view
@@ -40,9 +36,9 @@ def hello_world(request):
 def render_to_pdf(template_src, context, file_name="invoice"):
     Path("static/prescription/").mkdir(parents=True, exist_ok=True)
     file_path = f'prescription/{file_name}_{str(random.randint(100000, 9999999))}.pdf'
-    print("file_path::",file_path)
+    print("file_path::", file_path)
     template = get_template(template_src)
-    print("template::",template)
+    print("template::", template)
     html = template.render(context)
     options = {
         'page-height': '270mm',
@@ -50,36 +46,78 @@ def render_to_pdf(template_src, context, file_name="invoice"):
     }
 
     pdf = pdfkit.from_string(html, r'static/' + file_path, options=options)
-    return pdf,file_path
+    return pdf, file_path
 
 # @csrf_exempt
+
+
 @api_view(['POST'])
 def generate_prescription(request):
     template_src = 'prescription.html'
-    data = request.POST   
-    
+    data = request.POST
+
     random_integer = random.randint(1, 100)
-    temp, file_path = render_to_pdf(template_src, data, f'prescription_{random_integer}')
+    temp, file_path = render_to_pdf(
+        template_src, data, f'prescription_{random_integer}')
     user = BaseUser.objects.filter(mobile_no=data.get('mobile_no')).last()
     image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
-    
-    return JsonResponse({"msg":"Done","file_path":image_url})
+
+    return JsonResponse({"msg": "Done", "file_path": image_url})
+
+
+# @api_view(['GET'])
+# def find_nearby_hospitals(request):
+#     latitude = request.data.get('latitude')
+#     longitude = request.data.get('longitude')
+#     api_key = "YOUR_API_KEY"  # Replace with your actual API key
+
+#     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+
+#     # API parameters
+#     params = {
+#         "location": f"{latitude},{longitude}",
+#         "radius": 5000,  # Adjust the radius as needed
+#         "type": "hospital",
+#         "key": "AIzaSyA7mOSN-0l6I0NXgrhs_aOqONnLmRb5D-c"
+#     }
+
+#     # Send a GET request to the API
+#     response = requests.get(url, params=params)
+#     data = response.json()
+
+#     # Check if the API request was successful
+#     print("response::",response.content)
+#     if response.status_code == 200 and data.get("status") == "OK":
+#         # Process the results
+#         hospitals = data.get("results", [])
+#         if hospitals:
+#             top_hospitals = hospitals[:5]
+#             hospital_info = [{"name": h["name"], "vicinity": h["vicinity"]} for h in top_hospitals]
+#             return JsonResponse({"data": hospital_info})
+#         else:
+#             return JsonResponse({"data": []})  # No hospitals found
+#     else:
+#         print("Failed to retrieve nearby hospitals.")
+#         return JsonResponse({"error": True})
+
+# Replace 'Your_API_Key' with your actual Google Places API key
+
 
 @api_view(['POST'])
 def generate_otp(request):
     mobile_no = request.data.get('mobile_no')
     action = request.data.get('action')
     otp_code = ''.join(random.choices(string.digits, k=4))
-    if action =='signup':
+    if action == 'signup':
         if BaseUser.objects.filter(mobile_no=mobile_no).exists():
-            return JsonResponse({"message":"User already exists"})
+            return JsonResponse({"message": "User already exists"})
     otp_queryset = OTP.objects.filter(mobile_no=mobile_no)
-    
+
     if otp_queryset.exists():
         otp_queryset.delete()
-    OTP.objects.create(mobile_no=mobile_no,value=otp_code)
+    OTP.objects.create(mobile_no=mobile_no, value=otp_code)
 
-    # below code Commented for avoiding otp on mobile 
+    # below code Commented for avoiding otp on mobile
 
     # account_sid = 'ACdbb2705cf90998caf991d0f3dcdfbe3a'
     # auth_token = 'efc2fdabb8b421942040dc01e5ff55e3'
@@ -91,7 +129,7 @@ def generate_otp(request):
     # to='+91'+str(mobile_no)
     # )
     # print("Response::",message)
-    return JsonResponse({'message': "OTP sent successfully","otp":otp_code})
+    return JsonResponse({'message': "OTP sent successfully", "otp": otp_code})
 
 
 @api_view(['POST'])
@@ -100,69 +138,67 @@ def verify_otp(request):
     mobile_no = request.data.get('mobile_no')
     action = request.data.get('action')
     otp_queryset = OTP.objects.filter(mobile_no=mobile_no)
-    if action=="login": # Login logic
+    if action == "login":  # Login logic
         user = BaseUser.objects.filter(mobile_no=mobile_no)
         if not user.exists():
-            return JsonResponse({"message": "No Such User"},status=status.HTTP_404_NOT_FOUND)
+            return JsonResponse({"message": "No Such User"}, status=status.HTTP_404_NOT_FOUND)
         user = user.last()
-       
+
         user_details = {
             'id': user.id,
             'mobile_no': user.mobile_no,
             'first_name': user.first_name,
             'last_name': user.last_name,
             'email': user.email,
-            
-            
+            'uuid': user.uuid,
+
         }
     if otp_queryset.exists():
         correct_otp = otp_queryset.last().value
         is_used = otp_queryset.last().is_used
 
-        if (correct_otp == user_otp and not is_used)  or user_otp=='2121':
+        if (correct_otp == user_otp and not is_used) or user_otp == '2121':
             otp_queryset.update(is_used=True)
-            base_user_queryset = BaseUser.objects.filter(mobile_no = mobile_no)
+            base_user_queryset = BaseUser.objects.filter(mobile_no=mobile_no)
             if not base_user_queryset.exists():
                 BaseUser.objects.create(mobile_no=mobile_no)
-                user = BaseUser.objects.get(mobile_no=mobile_no)        
-                
-                return JsonResponse({
-                        "status": "success",
-                            "message": "OTP verified",
-                        }, status=status.HTTP_200_OK)
+                user = BaseUser.objects.get(mobile_no=mobile_no)
 
-        
+                return JsonResponse({
+                    "status": "success",
+                    "message": "OTP verified",
+                }, status=status.HTTP_200_OK)
+
             # Include advocate-specific data if the user is an advocate
             if user.user_type == 'doctor':
                 doctor = Doctor.objects.get(user=user)
                 user_details['hospital_affiliation'] = doctor.hospital_affiliation
                 user_details['license_number'] = doctor.license_number
                 user_details['years_of_experience'] = doctor.years_of_experience
-                user_details['prescription'] = doctor.prescription
+                # user_details['prescription'] = doctor.prescription
             elif user.user_type == 'patient':
                 patient = Patient.objects.get(user=user)
                 user_details['allergies'] = patient.allergies
                 user_details['current_medications'] = patient.current_medications
-                user_details['medical_conditions'] = patient.medical_conditions            
+                user_details['medical_conditions'] = patient.medical_conditions
             return JsonResponse({
-                        "status": "success",
-                        "message": "Login successful",
-                        "data":user_details,
-                    }, status=status.HTTP_200_OK)
+                "status": "success",
+                "message": "Login successful",
+                "data": user_details,
+            }, status=status.HTTP_200_OK)
 
         else:
             return JsonResponse({"status": "False", "message": "Invalid OTP"}, status=status.HTTP_400_BAD_REQUEST)
     else:
         return JsonResponse({"success": False, "message": "No OTP found"}, status=status.HTTP_404_NOT_FOUND)
-    
 
 
 @csrf_exempt
 def find_nearby_hospitals(request):
     if request.method == 'GET':
-        
-        latitude = request.GET.get('latitude','19.3826')
-        longitude = request.GET.get('longitude','72.8320')
+
+        latitude = request.GET.get('latitude', '19.3826')
+        longitude = request.GET.get('longitude', '72.8320')
 
         # Initialize the GooglePlaces constructor
         google_places = GooglePlaces(settings.GMAP_API_KEY)
@@ -193,24 +229,28 @@ def find_nearby_hospitals(request):
     else:
         return JsonResponse({"error": "Invalid request method. Use GET."})
 
+
 @api_view(['POST'])
 def upload_doc(request):
     user_id = request.query_params.get('id')
     user = BaseUser.objects.filter(id=user_id).last()
-    Document.objects.create(user=user,file_name=request.data.get('file_name'),hash_value=request.data.get('hash_value'))
-    return JsonResponse({"status":"success","message":"Document uploaded successfully"})
+    Document.objects.create(user=user, file_name=request.data.get(
+        'file_name'), hash_value=request.data.get('hash_value'))
+    return JsonResponse({"status": "success", "message": "Document uploaded successfully"})
+
 
 @api_view(['GET'])
 def get_doc(request):
     user_id = request.query_params.get('id')
     user = BaseUser.objects.filter(id=user_id).last()
     doc = Document.objects.filter(user=user)
-    data = DocumentSerializer(doc,many=True).data
-    return JsonResponse({"status":"success","data":data})
+    data = DocumentSerializer(doc, many=True).data
+    return JsonResponse({"status": "success", "data": data})
 
 
 @api_view(['POST'])
 def user_registration(request):
+    print("request data::", request.data)
     mobile_no = request.data.get('mobile_no')
     user_type = request.data.get('user_type')
     first_name = request.data.get('first_name', None)
@@ -225,36 +265,40 @@ def user_registration(request):
         base_user.email = email
         base_user.user_type = user_type
         profile_picture = request.FILES.get('profile_pic')
-        print("profile_picture::",profile_picture)
+        print("profile_picture::", profile_picture)
         if profile_picture:
             print(profile_picture)
             base_user.profile_picture = profile_picture
             base_user.save()
-            print("base_user::",base_user.profile_picture)
+            print("base_user::", base_user.profile_picture)
             # Use the .url property to get the image URL
             base_user.profile_picture_url = base_user.profile_picture.url
         base_user.save()
-                
-        
+
         if base_user.user_type == 'doctor':
             # try:
-                print("on 304")
-                template_src = 'letter_head.html'
-                data = request.data
-                print(request.FILES)
-                
-                random_integer = random.randint(1, 100)
-                temp, file_path = render_to_pdf(template_src, data, f'letter_head_{random_integer}')
-                user = BaseUser.objects.filter(mobile_no=mobile_no).last()
-                print('user::',user)
-                image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
-                print("mobile_no::",mobile_no)
-                doctor, created = Doctor.objects.get_or_create(user=user)
-                print("doctor::",doctor)
-                doctor.hospital_affiliation = request.data.get('hospital_affiliation', None)
-                doctor.license_number = request.data.get('license_number', None)
-                doctor.years_of_experience = request.data.get('years_of_experience', None)
-                doctor.letter_head_url = image_url
+            print("on 304")
+            template_src = 'letter_head.html'
+            data = request.data
+            print(request.FILES)
+
+            random_integer = random.randint(1, 100)
+            temp, file_path = render_to_pdf(
+                template_src, data, f'letter_head_{random_integer}')
+            user = BaseUser.objects.filter(mobile_no=mobile_no).last()
+            print('user::', user)
+            image_url = "{}/static/".format(
+                settings.CURRENT_HOST)+file_path
+            print("mobile_no::", mobile_no)
+            doctor, created = Doctor.objects.get_or_create(user=user)
+            print("doctor::", doctor)
+            doctor.hospital_affiliation = request.data.get(
+                 'hospital_affiliation', None)
+             doctor.license_number = request.data.get(
+                  'license_number', None)
+              doctor.years_of_experience = request.data.get(
+                   'years_of_experience', None)
+               doctor.letter_head_url = image_url
                 doctor.save()
                 user_details = {
                     'id': doctor.user.id,
@@ -274,23 +318,28 @@ def user_registration(request):
             #     return JsonResponse({"error": str(e)})
         elif base_user.user_type == 'patient':
             # try:
-                data = request.data
-                template_src = 'prescription.html'
-                patient, created = Patient.objects.get_or_create(user=base_user)
-                patient.allergies = request.data.get('allergies', None)
-                patient.current_medications = request.data.get('current_medications', None)
-                patient.medical_conditions = request.data.get('medical_conditions', None)
-                random_integer = random.randint(1, 100)
-                file_name = f'prescription_{random_integer}'
-                temp, file_path = render_to_pdf(template_src, data, file_name)
-                user = BaseUser.objects.filter(mobile_no=mobile_no).last()
-                print('user::',user)
-                image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
+            data = request.data
+            template_src = 'prescription.html'
+            patient, created = Patient.objects.get_or_create(
+                user=base_user)
+            patient.allergies = request.data.get('allergies', None)
+            patient.current_medications = request.data.get(
+                'current_medications', None)
+            patient.medical_conditions = request.data.get(
+                'medical_conditions', None)
+            random_integer = random.randint(1, 100)
+            file_name = f'prescription_{random_integer}'
+            temp, file_path = render_to_pdf(template_src, data, file_name)
+            user = BaseUser.objects.filter(mobile_no=mobile_no).last()
+            print('user::', user)
+            image_url = "{}/static/".format(
+                settings.CURRENT_HOST)+file_path
 
-                doc = Document.objects.create(user=user,download_image_url=image_url,file_name=file_name)
-                patient.save()
-                user_details = {
-                    'id': patient.user.id,
+            doc = Document.objects.create(
+                 user=user, download_image_url=image_url, file_name=file_name)
+             patient.save()
+              user_details = {
+                   'id': patient.user.id,
                     'first_name': patient.user.first_name,
                     'last_name': patient.user.last_name,
                     'email': patient.user.email,
@@ -298,10 +347,10 @@ def user_registration(request):
                     # 'profile_url': settings.CURRENT_HOST + "" + patient.user.profile_picture_url,
                     'current_medications': patient.current_medications,
                     'medical_conditions': patient.medical_conditions,
-                    'prescription_url':doc.download_image_url,
-                }
+                    'prescription_url': doc.download_image_url,
+                   }
 
-                if created:
+               if created:
                     return JsonResponse({'message': 'Patient registered successfully', 'user': user_details, "status": "success"},
                                         status=status.HTTP_201_CREATED)
                 else:
@@ -311,11 +360,8 @@ def user_registration(request):
                 # except Exception as e:
                 #     return JsonResponse({"error": str(e)})
 
-
     else:
-        return JsonResponse({'message': 'User Not Found'}, status=status.HTTP_404_NOT_FOUND)        
-
-
+        return JsonResponse({'message': 'User Not Found'}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['POST'])
@@ -323,40 +369,33 @@ def generate_card(request):
     template_src = 'card.html'
     data = {}
     random_integer = random.randint(1, 100)
-    temp, file_path = render_to_pdf(template_src, data, f'letter_head_{random_integer}')
+    temp, file_path = render_to_pdf(
+        template_src, data, f'letter_head_{random_integer}')
     # user = BaseUser.objects.filter(mobile_no=mobile_no).last()
     # print('user::',user)
     image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
 
-    return JsonResponse({"msg":"Done","file_path":image_url})
+    return JsonResponse({"msg": "Done", "file_path": image_url})
+
 
 @api_view(['POST'])
 def upload_prescription(request):
     data = request.data
     template_src = 'prescription.html'
     random_integer = random.randint(1, 100)
-    temp, file_path = render_to_pdf(template_src, data, f'letter_head_{random_integer}')
+    temp, file_path = render_to_pdf(
+        template_src, data, f'letter_head_{random_integer}')
     # user = BaseUser.objects.filter(mobile_no=mobile_no).last()
     # print('user::',user)
     image_url = "{}/static/".format(settings.CURRENT_HOST)+file_path
 
-    return JsonResponse({"msg":"Done","file_path":image_url})
+    return JsonResponse({"msg": "Done", "file_path": image_url})
 
 
-
-##OCR
-
+# OCR
 # yourappname/views.py
-import os
-import json
-import cv2
-import layoutparser as lp
-from paddleocr import PaddleOCR
-import pandas as pd
-from django.http import JsonResponse
-from rest_framework.decorators import api_view, parser_classes
-from rest_framework.parsers import MultiPartParser, FormParser
 # from .models import ProcessedImage
+
 
 @api_view(['POST'])
 @parser_classes((MultiPartParser, FormParser,))
@@ -378,7 +417,8 @@ def table_ocr(request):
         model = lp.PaddleDetectionLayoutModel(
             config_path="lp://PubLayNet/ppyolov2_r50vd_dcn_365e_publaynet/config",
             threshold=0.5,
-            label_map={0: "Text", 1: "Title", 2: "List", 3: "Table", 4: "Figure"},
+            label_map={0: "Text", 1: "Title",
+                       2: "List", 3: "Table", 4: "Figure"},
             enforce_cpu=False,
             enable_mkldnn=True
         )
@@ -500,7 +540,8 @@ def table_ocr(request):
             # Compare the current bbox_sum with the previous one
             if bbox_sum > previous_bbox_sum:
                 # Get the corresponding text value
-                text = new_df.loc[new_df['BboxSum'] == bbox_sum, 'Text'].values[0]
+                text = new_df.loc[new_df['BboxSum']
+                                  == bbox_sum, 'Text'].values[0]
                 # Exclude the duplicate values
                 if text != key:
                     # Append the value to the existing key
@@ -512,7 +553,8 @@ def table_ocr(request):
                             key_value_pairs[key] = [text]
             else:
                 # Create a new key
-                key = new_df.loc[new_df['BboxSum'] == bbox_sum, 'Text'].values[0]
+                key = new_df.loc[new_df['BboxSum']
+                                 == bbox_sum, 'Text'].values[0]
                 # Initialize the value as a list with the current text
                 # Check if the key is in the exclusion list
                 if key not in keys_to_find:
@@ -528,7 +570,7 @@ def table_ocr(request):
         merged_json = {**json.loads(result_json), **json.loads(key_value_json)}
 
         # Save the processed data and image to the database
-       
+
         # processed_image = ProcessedImage(image=image_file, processed_data=merged_json)
         # processed_image.save()
 
@@ -560,12 +602,10 @@ def qr_code(request):
     # Adding the retrieved documents to the many-to-many relationship
     patient_record_to_doctor.record.set(documents)
 
-
     DoctorTracktoPatient.objects.create(patient=Patient.objects.get(user=patient_base_user,
                                         doctor=Doctor.objects.get(user=doctor_base_user)))
-    return JsonResponse({"success": True,"msg":"Successfully done"}, status=200)
+    return JsonResponse({"success": True, "msg": "Successfully done"}, status=200)
 
-from django.shortcuts import get_object_or_404
 
 @api_view(['POST'])
 def qr_code(request):
@@ -578,39 +618,41 @@ def qr_code(request):
     documents = Document.objects.filter(user=patient_base_user)
 
     # Creating PatientRecordToDoctor with multiple documents
-    if not (PatientRecordToDoctor.objects.filter( doctor=Doctor.objects.get(user=doctor_base_user),
-        patient=Patient.objects.get(user=patient_base_user))).exists():
+    if not (PatientRecordToDoctor.objects.filter(doctor=Doctor.objects.get(user=doctor_base_user),
+                                                 patient=Patient.objects.get(user=patient_base_user))).exists():
         patient_record_to_doctor = PatientRecordToDoctor.objects.create(
             doctor=Doctor.objects.get(user=doctor_base_user),
             patient=Patient.objects.get(user=patient_base_user),
         )
-        
+
         patient_record_to_doctor.record.set(documents)
 
         if not (DoctorTracktoPatient.objects.filter(patient=patient_record_to_doctor.patient,
-                                            doctor=patient_record_to_doctor.doctor)).exists():
+                                                    doctor=patient_record_to_doctor.doctor)).exists():
             DoctorTracktoPatient.objects.create(patient=patient_record_to_doctor.patient,
                                                 doctor=patient_record_to_doctor.doctor)
-        
+
             return JsonResponse({"success": True, "msg": "Successfully done"}, status=200)
         return JsonResponse({"success": True, "msg": "Successfully"})
     else:
-        return JsonResponse({"msg":"Record Already Exists"})
+        return JsonResponse({"msg": "Record Already Exists"})
 
 
-#Show Patient All the data to whom the data is accessible
-@api_view(['GET'])
+# Show Patient All the data to whom the data is accessible
+@api_view(['POST'])
 def show_data_to_patient(request):
     uuid = request.data.get('uuid')
+
     base = BaseUser.objects.get(uuid=uuid)
     print(base)
     patient = Patient.objects.get(user=base)
-    queryset = DoctorTracktoPatient.objects.filter(patient=patient).values('doctor__user__uuid','patient__id')
+    queryset = DoctorTracktoPatient.objects.filter(
+        patient=patient).values('doctor__user__uuid', 'patient__id')
     # print(doctor_serializer)
-    return JsonResponse({"data":list(queryset)})
+    return JsonResponse({"data": list(queryset)})
 
 
-@api_view(['GET'])
+@api_view(['POST'])
 def show_data_to_doctor(request):
     uuid = request.data.get('uuid')
     user = BaseUser.objects.get(uuid=uuid)
@@ -618,10 +660,11 @@ def show_data_to_doctor(request):
     doctor = Doctor.objects.filter(user=user).last()
     print(doctor)
 
-    data = PatientRecordToDoctor.objects.filter(doctor__user=user).values('record__hash_value')
+    data = PatientRecordToDoctor.objects.filter(doctor__user=user).values(
+        'record__hash_value', 'record__file_name')
 
     # patient = PatientRecordToDoctorSerializer(data,many=True).data
-    return JsonResponse({"data":list(data)})
+    return JsonResponse({"data": list(data)})
 
 
 @api_view(['POST'])
@@ -632,25 +675,9 @@ def remove_access(request):
     doctor_base_user = BaseUser.objects.get(uuid=doctor_uid)
     doctor = Doctor.objects.get(user=doctor_base_user)
     patient = Patient.objects.get(user=patient_base_user)
-    
-    DoctorTracktoPatient.objects.filter(patient=patient,doctor=doctor).delete()
-    PatientRecordToDoctor.objects.filter(patient=patient,doctor=doctor).delete()
-    return JsonResponse({"msg":"Record deleted successfully!"})
 
-
-# Triggering the blockchain method 
-from thirdweb import ThirdwebSDK
-from thirdweb.types import SDKOptions
-@api_view(['POST'])
-def trigger_smartcontract(request):
-    abi = [{"inputs":[{"internalType":"uint256","name":"_gasCostCoverage","type":"uint256"}],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":False,"inputs":[{"indexed":True,"internalType":"address","name":"patient","type":"address"},{"indexed":False,"internalType":"uint256","name":"dataCount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DataSale","type":"event"},{"inputs":[],"name":"dataThreshold","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"gasCostCoverage","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"patients","outputs":[{"internalType":"uint256","name":"dataCount","type":"uint256"},{"internalType":"string","name":"disorderName","type":"string"},{"internalType":"enum HealthDataMarketplace.DisorderType","name":"disorderType","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"_dataCount","type":"uint256"},{"internalType":"string","name":"_disorderName","type":"string"},{"internalType":"enum HealthDataMarketplace.DisorderType","name":"_disorderType","type":"uint8"}],"name":"submitData","outputs":[],"stateMutability":"nonpayable","type":"function"}]
-    contract_address = "0xC52FAD3A24b85aABBa08fE6335925847DCEa4B86"
-    sdk = ThirdwebSDK("goerli", options=SDKOptions(secret_key="0x2a19c7f0bC798b1A085238fdbC307ebE5b03A46C"))
-    contract = sdk.get_contract(contract_address, abi=abi)
-    _dataCount = 1
-    _disorderName = "Cancer"  #
-    _disorderType = "Critical"
-    data = contract.call("submitData", _dataCount, _disorderName, _disorderType)
-    print(data)
-    return JsonResponse({"msg":"Stored to blockchain"})
-    
+    DoctorTracktoPatient.objects.filter(
+        patient=patient, doctor=doctor).delete()
+    PatientRecordToDoctor.objects.filter(
+        patient=patient, doctor=doctor).delete()
+    return JsonResponse({"msg": "Record deleted successfully!"})
